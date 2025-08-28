@@ -1,6 +1,7 @@
 
 from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from typing import Dict
 from .schemas import GreetResponse, FoodLogIn, InterruptIn
 from .agents.greet_agent import greet
@@ -10,6 +11,8 @@ from .services.mood import list_recent_mood
 from .services.food import add_food, list_recent_food
 from .services.mealplan import build_meal_plan
 from .db import get_conn
+from .agents.coordinator import route as coord_route
+
 
 app = FastAPI(title="dhushy63AI API")
 
@@ -52,8 +55,16 @@ def meal_plan(user_id: int = 1):
     return build_meal_plan(user_id)
 
 @app.post("/interrupt")
-def interrupt(payload: InterruptIn):
-    return interrupt_respond(payload.user_id, payload.query)
+def interrupt(in_: InterruptIn = Body(...)):
+    try:
+        text = interrupt_respond(in_.query, in_.user_id)
+        return {"reply": text}
+    except Exception as e:
+        import traceback
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "trace": traceback.format_exc()[:2000]}
+        )
 
 # --- create tables if missing (idempotent) ---
 @app.on_event("startup")
@@ -81,3 +92,33 @@ def init_db():
 """
 Run data/generate_dataset.py once to seed the DB.
 """
+
+@app.post("/chat")  # a unified entry if you want the FE chat to hit one endpoint
+def chat(in_: InterruptIn = Body(...)):
+    """
+    A single endpoint that can handle all intents via the Coordinator:
+    greet/mood/cgm/meal/interrupt based on query text + context.
+    """
+    # Build simple context from your DB/services
+    user_id = in_.user_id or 1
+    # fetch small pieces for context (pseudo - use your existing services)
+    name = "User"
+    city = "Mumbai"
+    diet = "vegetarian"
+    conditions = ["type 2 diabetes"]
+    mood_series = []  # e.g. list_recent_mood(...)
+    cgm_series = []   # e.g. list_recent_cgm(...)
+    hints = {"latest_cgm": 120}
+
+    ctx = {
+        "user_id": user_id,
+        "name": name,
+        "city": city,
+        "diet": diet,
+        "conditions": conditions,
+        "mood_series": mood_series,
+        "cgm_series": cgm_series,
+        "hints": hints,
+    }
+    reply = coord_route(in_.query, ctx)
+    return {"reply": reply}
